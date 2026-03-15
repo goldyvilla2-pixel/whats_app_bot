@@ -66,6 +66,17 @@ client.on('message', async (msg) => {
     const chat = await msg.getChat();
     const body = msg.body.toLowerCase().trim();
 
+    // LOG GROUP ID FOR USER SETUP (Helps find the ID to lock the bot)
+    if (chat.isGroup) {
+        console.log(`💬 Message in Group: "${chat.name}" | ID: ${msg.from}`);
+    }
+
+    // Security: Only respond in a specific group if ID is provided
+    const allowedGroup = process.env.ALLOWED_GROUP_ID;
+    if (allowedGroup && msg.from !== allowedGroup) {
+        return; 
+    }
+
     // Trigger Menu
     if (body === 'report' || body === '/report') {
         const menuMessage = 
