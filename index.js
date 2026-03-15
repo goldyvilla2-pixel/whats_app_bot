@@ -19,14 +19,27 @@ const supabase = createClient(
 const app = express();
 const port = process.env.PORT || 3000;
 let lastQr = '';
+let isConnected = false;
 
+// START LISTENING IMMEDIATELY (Satisfies Render Health Check)
 app.listen(port, '0.0.0.0', () => {
     console.log(`✅ Web Server live on port ${port}`);
 });
 
 app.get('/', (req, res) => {
+    if (isConnected) {
+        res.send(`
+            <div style="text-align:center; font-family:sans-serif; margin-top:50px;">
+                <h1 style="color: #25D366;">✅ Bot is Connected & Live!</h1>
+                <p>You can now go to your WhatsApp group and type <b>"Report"</b>.</p>
+                <p style="color: grey; font-size: 12px;">The bot is running 24/7 in the cloud.</p>
+            </div>
+        `);
+        return;
+    }
+    
     if (!lastQr) {
-        res.send('<h1>Bot is starting...</h1><p>Please wait while we generate a new QR code.</p><script>setTimeout(() => location.reload(), 5000)</script>');
+        res.send('<h1>Bot is starting...</h1><p>Please wait 30-60 seconds for the QR code to appear.</p><script>setTimeout(() => location.reload(), 5000)</script>');
         return;
     }
     qrcode.toDataURL(lastQr, (err, url) => {
@@ -74,6 +87,7 @@ async function connectToWhatsApp() {
         } else if(connection === 'open') {
             console.log('✅ Bot connected successfully!');
             lastQr = '';
+            isConnected = true;
         }
     });
 
