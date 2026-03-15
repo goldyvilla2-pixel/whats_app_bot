@@ -10,15 +10,19 @@ const supabase = createClient(
     process.env.SUPABASE_URL,
     process.env.SUPABASE_ANON_KEY
 );
-
 // 2. Setup Express for QR Code (Cloud Access)
 const app = express();
 const port = process.env.PORT || 3000;
 let lastQr = '';
 
+// START LISTENING IMMEDIATELY (Satisfies Render Health Check)
+app.listen(port, '0.0.0.0', () => {
+    console.log(`✅ Web Server live on port ${port}`);
+});
+
 app.get('/', (req, res) => {
     if (!lastQr) {
-        res.send('<h1>QR Code not generated yet. Please wait...</h1><script>setTimeout(() => location.reload(), 2000)</script>');
+        res.send('<h1>Bot is starting...</h1><p>Please wait 30-60 seconds for the QR code to appear.</p><script>setTimeout(() => location.reload(), 5000)</script>');
         return;
     }
     qrcode.toDataURL(lastQr, (err, url) => {
@@ -28,14 +32,10 @@ app.get('/', (req, res) => {
                 <p>Open WhatsApp on your phone > Linked Devices > Link a Device</p>
                 <img src="${url}" style="border:10px solid #eee; padding:10px; border-radius:10px;" />
                 <p style="color: grey;">Status: Waiting for scan...</p>
-                <script>setTimeout(() => location.reload(), 5000)</script>
+                <script>setTimeout(() => location.reload(), 10000)</script>
             </div>
         `);
     });
-});
-
-app.listen(port, () => {
-    console.log(`🔗 QR Code available at: http://localhost:${port}`);
 });
 
 // 3. Initialize WhatsApp Client
