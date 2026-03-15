@@ -1,7 +1,7 @@
 {
-  "name": "operations-whatsapp-bot",
+  "name": "operations-whatsapp-bot-light",
   "version": "1.0.0",
-  "description": "24/7 Cloud WhatsApp Bot for Marketing Dashboard Reports",
+  "description": "Lighter Cloud WhatsApp Bot using Baileys (No-Browser)",
   "main": "index.js",
   "type": "module",
   "scripts": {
@@ -9,9 +9,10 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.7",
+    "@whiskeysockets/baileys": "^6.6.0",
     "dotenv": "^16.4.5",
     "express": "^4.18.3",
-    "qrcode": "^1.5.3",
-    "whatsapp-web.js": "^1.23.0"
+    "pino": "^8.19.0",
+    "qrcode": "^1.5.3"
   }
 }

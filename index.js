@@ -1,34 +1,38 @@
 import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
-import pkg from 'whatsapp-web.js';
-const { Client, LocalAuth } = pkg;
+import makeWASocket, { 
+    useMultiFileAuthState, 
+    DisconnectReason,
+    fetchLatestBaileysVersion
+} from '@whiskeysockets/baileys';
 import qrcode from 'qrcode';
 import express from 'express';
+import pino from 'pino';
 
 // 1. Setup Supabase
 const supabase = createClient(
     process.env.SUPABASE_URL,
     process.env.SUPABASE_ANON_KEY
 );
-// 2. Setup Express for QR Code (Cloud Access)
+
+// 2. Setup Express for QR Code
 const app = express();
 const port = process.env.PORT || 3000;
 let lastQr = '';
 
-// START LISTENING IMMEDIATELY (Satisfies Render Health Check)
 app.listen(port, '0.0.0.0', () => {
     console.log(`✅ Web Server live on port ${port}`);
 });
 
 app.get('/', (req, res) => {
     if (!lastQr) {
-        res.send('<h1>Bot is starting...</h1><p>Please wait 30-60 seconds for the QR code to appear.</p><script>setTimeout(() => location.reload(), 5000)</script>');
+        res.send('<h1>Bot is starting...</h1><p>Please wait while we generate a new QR code.</p><script>setTimeout(() => location.reload(), 5000)</script>');
         return;
     }
     qrcode.toDataURL(lastQr, (err, url) => {
         res.send(`
             <div style="text-align:center; font-family:sans-serif; margin-top:50px;">
-                <h1>Scan to Link Bot</h1>
+                <h1>Scan to Link Bot (Light Version)</h1>
                 <p>Open WhatsApp on your phone > Linked Devices > Link a Device</p>
                 <img src="${url}" style="border:10px solid #eee; padding:10px; border-radius:10px;" />
                 <p style="color: grey;">Status: Waiting for scan...</p>
@@ -38,97 +42,108 @@ app.get('/', (req, res) => {
     });
 });
 
-// 3. Initialize WhatsApp Client
-const client = new Client({
-    authStrategy: new LocalAuth({ dataPath: './session' }),
-    puppeteer: {
-        args: [
-            '--no-sandbox', 
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--disable-gpu'
-        ],
-        headless: true
-    }
-});
+// 3. Initialize WhatsApp Connection (Baileys)
+async function connectToWhatsApp() {
+    const { state, saveCreds } = await useMultiFileAuthState('session_auth');
+    const { version } = await fetchLatestBaileysVersion();
 
-client.on('qr', (qr) => {
-    console.log('⚡ New QR Code generated. Scan in browser.');
-    lastQr = qr;
-});
+    const sock = makeWASocket.default({
+        version,
+        logger: pino({ level: 'silent' }),
+        printQRInTerminal: true,
+        auth: state,
+        browser: ["Marketing Dashboard Bot", "Chrome", "1.0.0"]
+    });
 
-client.on('ready', () => {
-    console.log('✅ Bot is connected and ready!');
-    lastQr = ''; // Clear QR on success
-});
+    sock.ev.on('creds.update', saveCreds);
 
-client.on('authenticated', () => {
-    console.log('🔓 Authenticated successfully.');
-});
-
-// 4. Message Handler
-client.on('message', async (msg) => {
-    const chat = await msg.getChat();
-    const body = msg.body.toLowerCase().trim();
-
-    // LOG GROUP ID FOR USER SETUP (Helps find the ID to lock the bot)
-    if (chat.isGroup) {
-        console.log(`💬 Message in Group: "${chat.name}" | ID: ${msg.from}`);
-    }
-
-    // Security: Only respond in a specific group if ID is provided
-    const allowedGroup = process.env.ALLOWED_GROUP_ID;
-    if (allowedGroup && msg.from !== allowedGroup) {
-        return; 
-    }
-
-    // Trigger Menu
-    if (body === 'report' || body === '/report') {
-        const menuMessage = 
-            `📊 *OPERATIONS COMMAND CENTER*\n\n` +
-            `Which report would you like to see for today?\n\n` +
-            `1️⃣ *Today Summary* (Net Snapshot)\n` +
-            `2️⃣ *P&L Report* (Brand Wise)\n` +
-            `3️⃣ *Marketing* (Brand Spend)\n` +
-            `4️⃣ *Salaries* (Monthly Paid)\n` +
-            `5️⃣ *Vendor Balances* (Owed/Receivable)\n\n` +
-            `_Type the number to generate report._`;
+    sock.ev.on('connection.update', (update) => {
+        const { connection, lastDisconnect, qr } = update;
         
-        await client.sendMessage(msg.chat.id, menuMessage);
-        return;
-    }
-
-    // Handle Selection
-    const optionsMap = {
-        '1': 'rep_daily',
-        '2': 'rep_pnl',
-        '3': 'rep_mkt',
-        '4': 'rep_sal',
-        '5': 'rep_ven'
-    };
-
-    if (optionsMap[body]) {
-        const reportType = optionsMap[body];
-        
-        try {
-            await client.sendMessage(msg.chat.id, '⏳ _Generating your report..._');
-
-            // Call the SQL Function in Supabase
-            const { data, error } = await supabase.rpc('get_bot_report_content', {
-                report_type: reportType
-            });
-
-            if (error) throw error;
-
-            await client.sendMessage(msg.chat.id, data || '❌ No data found for this report.');
-        } catch (err) {
-            console.error('Bot Error:', err);
-            await client.sendMessage(msg.chat.id, '❌ Error fetching data. Please check Supabase logs.');
+        if(qr) {
+            console.log('⚡ New QR Code generated.');
+            lastQr = qr;
         }
-    }
-});
 
-client.initialize();
+        if(connection === 'close') {
+            const shouldReconnect = (lastDisconnect.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+            console.log('Connection closed due to ', lastDisconnect.error, ', reconnecting ', shouldReconnect);
+            if(shouldReconnect) {
+                connectToWhatsApp();
+            }
+        } else if(connection === 'open') {
+            console.log('✅ Bot connected successfully!');
+            lastQr = '';
+        }
+    });
+
+    // 4. Message Handler
+    sock.ev.on('messages.upsert', async m => {
+        const msg = m.messages[0];
+        if (!msg.message || msg.key.fromMe) return;
+
+        const remoteJid = msg.key.remoteJid;
+        const textMessage = msg.message.conversation || 
+                            msg.message.extendedTextMessage?.text || 
+                            '';
+        const body = textMessage.toLowerCase().trim();
+
+        // LOG GROUP ID FOR USER SETUP
+        const isGroup = remoteJid.endsWith('@g.us');
+        if (isGroup) {
+            console.log(`💬 Message in Group ID: ${remoteJid}`);
+        }
+
+        // Security: Only respond in a specific group if ID is provided
+        const allowedGroup = process.env.ALLOWED_GROUP_ID;
+        if (allowedGroup && remoteJid !== allowedGroup) {
+            return; 
+        }
+
+        // Trigger Menu
+        if (body === 'report' || body === '/report') {
+            const menuMessage = 
+                `📊 *OPERATIONS COMMAND CENTER (LIGHT)*\n\n` +
+                `Which report would you like for today?\n\n` +
+                `1️⃣ *Today Summary*\n` +
+                `2️⃣ *P&L Report*\n` +
+                `3️⃣ *Marketing*\n` +
+                `4️⃣ *Salaries*\n` +
+                `5️⃣ *Vendor Balances*\n\n` +
+                `_Reply with the number to generate._`;
+            
+            await sock.sendMessage(remoteJid, { text: menuMessage });
+            return;
+        }
+
+        // Handle Selection
+        const optionsMap = {
+            '1': 'rep_daily',
+            '2': 'rep_pnl',
+            '3': 'rep_mkt',
+            '4': 'rep_sal',
+            '5': 'rep_ven'
+        };
+
+        if (optionsMap[body]) {
+            const reportType = optionsMap[body];
+            
+            try {
+                await sock.sendMessage(remoteJid, { text: '⏳ _Generating report..._' });
+
+                const { data, error } = await supabase.rpc('get_bot_report_content', {
+                    report_type: reportType
+                });
+
+                if (error) throw error;
+
+                await sock.sendMessage(remoteJid, { text: data || '❌ No data found.' });
+            } catch (err) {
+                console.error('Bot Error:', err);
+                await sock.sendMessage(remoteJid, { text: '❌ Error fetching data.' });
+            }
+        }
+    });
+}
+
+connectToWhatsApp();
