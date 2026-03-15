@@ -91,70 +91,101 @@ async function connectToWhatsApp() {
         }
     });
 
+    // State management for user sessions (Temporary in-memory)
+    const userState = new Map();
+
     // 4. Message Handler
     sock.ev.on('messages.upsert', async m => {
         const msg = m.messages[0];
         if (!msg.message || msg.key.fromMe) return;
 
         const remoteJid = msg.key.remoteJid;
+        const participant = msg.key.participant || remoteJid;
+        
+        // Handle Poll Updates (Votes)
+        if (msg.message.pollUpdateMessage) {
+            const pollKey = msg.message.pollUpdateMessage.pollCreationMessageKey;
+            const vote = msg.message.pollUpdateMessage.vote; 
+            // Note: Baileys poll handling is complex, for simplicity we listen to the 'poll' event below
+            return;
+        }
+
         const textMessage = msg.message.conversation || 
                             msg.message.extendedTextMessage?.text || 
                             '';
         const body = textMessage.toLowerCase().trim();
 
-        // LOG GROUP ID FOR USER SETUP
-        const isGroup = remoteJid.endsWith('@g.us');
-        if (isGroup) {
-            console.log(`💬 Message in Group ID: ${remoteJid}`);
-        }
-
         // Security: Only respond in a specific group if ID is provided
         const allowedGroup = process.env.ALLOWED_GROUP_ID;
-        if (allowedGroup && remoteJid !== allowedGroup) {
-            return; 
-        }
+        if (allowedGroup && remoteJid !== allowedGroup) return;
 
-        // Trigger Menu
+        // Trigger Step 1: Date Selection
         if (body === 'report' || body === '/report') {
-            const menuMessage = 
-                `📊 *OPERATIONS COMMAND CENTER (LIGHT)*\n\n` +
-                `Which report would you like for today?\n\n` +
-                `1️⃣ *Today Summary*\n` +
-                `2️⃣ *P&L Report*\n` +
-                `3️⃣ *Marketing*\n` +
-                `4️⃣ *Salaries*\n` +
-                `5️⃣ *Vendor Balances*\n\n` +
-                `_Reply with the number to generate._`;
-            
-            await sock.sendMessage(remoteJid, { text: menuMessage });
+            const today = new Date();
+            const yesterday = new Date();
+            yesterday.setDate(today.getDate() - 1);
+
+            const todayStr = today.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+            const ydayStr = yesterday.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+
+            await sock.sendMessage(remoteJid, {
+                poll: {
+                    name: "📅 Select Report Date",
+                    values: [`Today (${todayStr})`, `Yesterday (${ydayStr})`],
+                    selectableCount: 1
+                }
+            });
             return;
         }
+    });
 
-        // Handle Selection
-        const optionsMap = {
-            '1': 'rep_daily',
-            '2': 'rep_pnl',
-            '3': 'rep_mkt',
-            '4': 'rep_sal',
-            '5': 'rep_ven'
-        };
+    // Handle Poll selections specifically
+    sock.ev.on('messages.update', async updates => {
+        for (const update of updates) {
+            if (update.update.pollUpdates && update.key.remoteJid) {
+                const pollUpdate = update.update.pollUpdates[0];
+                const vote = pollUpdate.vote;
+                if (!vote || !vote.selectedOptions) continue;
 
-        if (optionsMap[body]) {
-            const reportType = optionsMap[body];
-            
-            try {
-                await sock.sendMessage(remoteJid, { text: '⏳ _Generating report..._' });
+                // Simple check for which button was pressed based on index
+                const selectedIndex = vote.selectedOptions[0];
+                const remoteJid = update.key.remoteJid;
+                
+                // Get user current state
+                let state = userState.get(remoteJid) || { step: 'date' };
 
-                const { data, error } = await supabase.rpc('get_bot_report_content', {
-                    report_type: reportType
-                });
+                if (state.step === 'date') {
+                    const selectedDate = selectedIndex === 0 ? 'today' : 'yesterday';
+                    userState.set(remoteJid, { step: 'report', date: selectedDate });
 
-                if (error) throw error;
+                    await sock.sendMessage(remoteJid, {
+                        poll: {
+                            name: `📋 Select Report (${selectedDate.toUpperCase()})`,
+                            values: ["Owner Summary", "P&L Report", "Marketing", "Salaries", "Vendor Balances"],
+                            selectableCount: 1
+                        }
+                    });
+                } 
+                else if (state.step === 'report') {
+                    const dateOffset = state.date === 'today' ? 0 : 1;
+                    const reportOptions = ['rep_daily', 'rep_pnl', 'rep_mkt', 'rep_sal', 'rep_ven'];
+                    const reportType = reportOptions[selectedIndex];
+                    
+                    userState.delete(remoteJid); // Reset state
 
-                await sock.sendMessage(remoteJid, { text: data || '❌ No data found.' });
-            } catch (err) {
-                console.error('Bot Error:', err);
-                await sock.sendMessage(remoteJid, { text: '❌ Error fetching data.' });
+                    const targetDate = new Date();
+                    targetDate.setDate(targetDate.getDate() - dateOffset);
+                    const formattedDate = targetDate.toISOString().split('T')[0];
+
+                    await sock.sendMessage(remoteJid, { text: `⏳ _Generating ${reportType.replace('rep_', '')} for ${formattedDate}..._` });
+
+                    const { data, error } = await supabase.rpc('get_bot_report_content', {
+                        report_type: reportType,
+                        p_date: formattedDate
+                    });
+
+                    await sock.sendMessage(remoteJid, { text: data || '❌ No data found.' });
+                }
             }
         }
     });
